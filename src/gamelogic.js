@@ -1,3 +1,5 @@
+// battleship-server/src/gamelogic.js
+
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const GRID_SIZE = 10;
