@@ -1,8 +1,8 @@
-// battleship-server/src/index.js
-const express = require("express");
-const http = require("http");
-const { Server } = require("socket.io");
-const { validatePlacement, processShot, autoPlaceShips } = require("./gamelogic");
+// battleship-server/src/index.ts
+import express from "express";
+import http from "http";
+import { Server } from "socket.io";
+import { validatePlacement, processShot, autoPlaceShips } from "./gamelogic";
 
 const app = express();
 app.get("/health", (req, res) => res.status(200).send("ok"));
@@ -478,4 +478,4 @@ io.on("connection", (socket) => {
 });
 
 const PORT = process.env.PORT || 10008;
-server.listen(PORT, () => console.log("battleship-server listening on", PORT));
+server.listen(PORT, () => console.log("[BATTLESHIP] realtime listening on", PORT));

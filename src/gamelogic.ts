@@ -1,4 +1,4 @@
-// battleship-server/src/gamelogic.js
+// battleship-server/src/gamelogic.ts
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -187,4 +187,4 @@ function autoPlaceShips() {
     return result;
 }
 
-module.exports = { validatePlacement, processShot, autoPlaceShips, SHIPS_CONFIG, GRID_SIZE };
+export { validatePlacement, processShot, autoPlaceShips, SHIPS_CONFIG, GRID_SIZE };
