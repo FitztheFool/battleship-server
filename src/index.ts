@@ -1,4 +1,5 @@
 // battleship-server/src/index.ts
+import 'dotenv/config';
 import express from "express";
 import http from "http";
 import { Server } from "socket.io";
@@ -16,6 +17,25 @@ const io = new Server(server, {
         credentials: true,
     },
 });
+
+// ── Save attempts ─────────────────────────────────────────────────────────────
+
+async function saveAttempts(gameType, gameId, scores) {
+    const frontendUrl = process.env.FRONTEND_URL;
+    const secret = process.env.INTERNAL_API_KEY;
+    if (!frontendUrl || !secret) return;
+    try {
+        const res = await fetch(`${frontendUrl}/api/attempts`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${secret}` },
+            body: JSON.stringify({ gameType, gameId, scores }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        console.log(`[${gameType}] scores saved for ${gameId}`);
+    } catch (err) {
+        console.error(`[${gameType}] saveAttempts error:`, err);
+    }
+}
 
 // ── State ────────────────────────────────────────────────────────────────────
 
@@ -99,8 +119,8 @@ function startTurnTimer(room) {
         if (!enemy) return;
 
         const emptyCells = [];
-        for (let r = 0;r < 10;r++) {
-            for (let c = 0;c < 10;c++) {
+        for (let r = 0; r < 10; r++) {
+            for (let c = 0; c < 10; c++) {
                 if (!enemy.receivedShots.has(`${r},${c}`)) emptyCells.push([r, c]);
             }
         }
@@ -212,6 +232,11 @@ function handleShot(room, shooterUserId, row, col, isTimeout = false) {
                 receivedShots: Array.from(p.receivedShots),
             })),
         });
+        saveAttempts('BATTLESHIP', room.lobbyId, room.players.map((p) => ({
+            userId: p.userId,
+            score: p.userId === shooterUserId ? 1 : 0,
+            placement: p.userId === shooterUserId ? 1 : 2,
+        })));
         return;
     }
 
