@@ -84,11 +84,7 @@ function getSocketByUserId(room, userId) {
 }
 
 function emitToRoom(room, event, payload) {
-    room.players.forEach((p) => {
-        if (!p) return;
-        const s = io.sockets.sockets.get(p.socketId);
-        if (s) s.emit(event, payload);
-    });
+    io.to(`room:${room.lobbyId}`).emit(event, payload);
 }
 
 function emitToPlayer(room, userId, event, payload) {
@@ -262,17 +258,11 @@ function handleShot(room, shooterUserId, row, col, isTimeout = false) {
 io.on("connection", (socket) => {
     console.log("battleship: new connection", socket.id);
 
-    // ── Join ─────────────────────────────────────────────────────────────────
-    socket.on("battleship:join", ({ lobbyId, userId, username, avatar, options }) => {
-        if (!lobbyId || !userId || !username) return;
-
-        socket.data = { lobbyId, userId };
-        socket.join(`room:${lobbyId}`);
-
-        let room = getRoom(lobbyId);
-
-        if (!room) {
-            room = {
+    // ── Configure ─────────────────────────────────────────────────────────────
+    socket.on("battleship:configure", ({ lobbyId, options }, ack) => {
+        if (!lobbyId) return;
+        if (!rooms.has(lobbyId)) {
+            rooms.set(lobbyId, {
                 lobbyId,
                 options: {
                     turnDuration: options?.turnDuration ?? 30,
@@ -286,8 +276,23 @@ io.on("connection", (socket) => {
                 placementEndsAt: null,
                 turnEndsAt: null,
                 winnerId: null,
-            };
-            rooms.set(lobbyId, room);
+            });
+        }
+        if (typeof ack === 'function') ack();
+    });
+
+    // ── Join ─────────────────────────────────────────────────────────────────
+    socket.on("battleship:join", ({ lobbyId, userId, username, avatar }) => {
+        if (!lobbyId || !userId || !username) return;
+
+        socket.data = { lobbyId, userId };
+        socket.join(`room:${lobbyId}`);
+
+        const room = getRoom(lobbyId);
+
+        if (!room) {
+            socket.emit('notFound');
+            return;
         }
 
         // Find existing seat (reconnection) or assign new one
@@ -296,7 +301,18 @@ io.on("connection", (socket) => {
         if (seatIndex === -1) {
             seatIndex = room.players.findIndex((p) => p === null);
             if (seatIndex === -1) {
-                socket.emit("battleship:error", { message: "Room is full" });
+                // Spectator: no seat, just send current state and rely on room broadcasts
+                socket.emit("battleship:joined", {
+                    yourSeat: null,
+                    phase: room.phase,
+                    players: room.players.map((p) =>
+                        p ? { userId: p.userId, username: p.username, avatar: p.avatar, ready: p.ready } : null
+                    ),
+                    ...(room.phase === "playing" && room.turnEndsAt
+                        ? { currentTurnUserId: room.players[room.currentTurn]?.userId, turnEndsAt: room.turnEndsAt }
+                        : {}),
+                    ...(room.phase === "finished" ? { winnerUserId: room.winnerId } : {}),
+                });
                 return;
             }
             room.players[seatIndex] = {
