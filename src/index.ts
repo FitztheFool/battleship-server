@@ -218,7 +218,7 @@ function handleShot(room, shooterUserId, row, col, isTimeout = false) {
         room.winnerId = shooterUserId;
 
         emitToRoom(room, "battleship:shotResult", shotPayload);
-        emitToRoom(room, "battleship:gameOver", {
+        emitToRoom(room, "battleship:finished", {
             winnerUserId: shooterUserId,
             reason: "all_sunk",
             // Reveal both grids
@@ -261,7 +261,12 @@ io.on("connection", (socket) => {
     // ── Configure ─────────────────────────────────────────────────────────────
     socket.on("battleship:configure", ({ lobbyId, options }, ack) => {
         if (!lobbyId) return;
-        if (!rooms.has(lobbyId)) {
+        const existingRoom = rooms.get(lobbyId);
+        if (!existingRoom || existingRoom.phase === "finished") {
+            if (existingRoom) {
+                if (existingRoom.turnTimer) clearTimeout(existingRoom.turnTimer);
+                if (existingRoom.placementTimer) clearTimeout(existingRoom.placementTimer);
+            }
             rooms.set(lobbyId, {
                 lobbyId,
                 options: {
@@ -440,7 +445,7 @@ io.on("connection", (socket) => {
         const opponent = room.players[opponentIndex];
         room.winnerId = opponent?.userId ?? null;
 
-        emitToRoom(room, "battleship:gameOver", {
+        emitToRoom(room, "battleship:finished", {
             winnerUserId: room.winnerId,
             reason: "surrender",
             grids: room.players.map((p) => ({
@@ -449,6 +454,10 @@ io.on("connection", (socket) => {
                 receivedShots: Array.from(p.receivedShots),
             })),
         });
+        saveAttempts('BATTLESHIP', room.lobbyId, [
+            { userId: room.winnerId, score: 1, placement: 1 },
+            { userId: userId, score: 0, placement: 2, abandon: true },
+        ]);
     });
 
     // ── Rematch ───────────────────────────────────────────────────────────────
@@ -504,7 +513,7 @@ io.on("connection", (socket) => {
                 const opponent = r.players[opponentIndex];
                 r.winnerId = opponent?.userId ?? null;
 
-                emitToRoom(r, "battleship:gameOver", {
+                emitToRoom(r, "battleship:finished", {
                     winnerUserId: r.winnerId,
                     reason: "disconnect",
                     grids: r.players.map((p) => ({
