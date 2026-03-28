@@ -522,6 +522,10 @@ io.on("connection", (socket) => {
                         receivedShots: Array.from(p.receivedShots),
                     })),
                 });
+                saveAttempts('BATTLESHIP', r.lobbyId, [
+                    { userId: r.winnerId, score: 1, placement: 1 },
+                    { userId: userId, score: 0, placement: 2, abandon: true },
+                ]);
             }, 30_000);
         }
     });
