@@ -1,5 +1,6 @@
 // battleship-server/src/index.ts
 import 'dotenv/config';
+import { randomUUID } from 'crypto';
 import express from "express";
 import http from "http";
 import { Server } from "socket.io";
@@ -166,6 +167,7 @@ function startPlacementPhase(room) {
 function startGame(room) {
     clearRoomTimers(room);
     room.phase = "playing";
+    room.currentGameId = randomUUID();
     room.currentTurn = 0; // player[0] starts
     const endsAt = Date.now() + room.options.turnDuration * 1000;
     room.turnEndsAt = endsAt;
@@ -216,6 +218,7 @@ function handleShot(room, shooterUserId, row, col, isTimeout = false) {
     if (result.gameOver) {
         room.phase = "finished";
         room.winnerId = shooterUserId;
+        room.gameOverReason = "all_sunk";
 
         emitToRoom(room, "battleship:shotResult", shotPayload);
         emitToRoom(room, "battleship:finished", {
@@ -228,7 +231,7 @@ function handleShot(room, shooterUserId, row, col, isTimeout = false) {
                 receivedShots: Array.from(p.receivedShots),
             })),
         });
-        saveAttempts('BATTLESHIP', room.lobbyId, room.players.map((p) => ({
+        saveAttempts('BATTLESHIP', room.currentGameId ?? room.lobbyId, room.players.map((p) => ({
             userId: p.userId,
             score: p.userId === shooterUserId ? 1 : 0,
             placement: p.userId === shooterUserId ? 1 : 2,
@@ -351,6 +354,9 @@ io.on("connection", (socket) => {
                     turnEndsAt: room.turnEndsAt,
                 }
                 : {}),
+            ...(room.phase === "finished"
+                ? { winnerUserId: room.winnerId, gameOverReason: room.gameOverReason ?? null }
+                : {}),
         });
 
         // If reconnecting and had already placed ships, send them back
@@ -440,6 +446,7 @@ io.on("connection", (socket) => {
 
         clearRoomTimers(room);
         room.phase = "finished";
+        room.gameOverReason = "surrender";
 
         const opponentIndex = seatIndex === 0 ? 1 : 0;
         const opponent = room.players[opponentIndex];
@@ -454,7 +461,7 @@ io.on("connection", (socket) => {
                 receivedShots: Array.from(p.receivedShots),
             })),
         });
-        saveAttempts('BATTLESHIP', room.lobbyId, [
+        saveAttempts('BATTLESHIP', room.currentGameId ?? room.lobbyId, [
             { userId: room.winnerId, score: 1, placement: 1 },
             { userId: userId, score: 0, placement: 2, abandon: true },
         ]);
@@ -493,40 +500,43 @@ io.on("connection", (socket) => {
         const seatIndex = getSlotIndex(room, userId);
         if (seatIndex === -1) return;
 
+        // Ignore stale disconnect (player already reconnected with a newer socket)
+        if (room.players[seatIndex]?.socketId !== socket.id) return;
+
         console.log(`battleship: player ${userId} disconnected from ${lobbyId}`);
 
-        if (room.phase === "playing") {
-            // Give a 30s grace period for reconnection
-            setTimeout(() => {
-                const r = getRoom(lobbyId);
-                if (!r) return;
-                const player = r.players[seatIndex];
-                // Check if they reconnected (socketId changed) or still offline
-                if (!player || player.userId !== userId) return;
-                const s = io.sockets.sockets.get(player.socketId);
-                if (s) return; // reconnected
+        if (room.phase === "playing" || room.phase === "placement") {
+            // Déconnexion en cours de partie → forfait immédiat
+            clearRoomTimers(room);
+            room.phase = "finished";
+            room.gameOverReason = "disconnect";
+            const opponentIndex = seatIndex === 0 ? 1 : 0;
+            const opponent = room.players[opponentIndex];
+            room.winnerId = opponent?.userId ?? null;
 
-                // Forfeit
-                clearRoomTimers(r);
-                r.phase = "finished";
-                const opponentIndex = seatIndex === 0 ? 1 : 0;
-                const opponent = r.players[opponentIndex];
-                r.winnerId = opponent?.userId ?? null;
-
-                emitToRoom(r, "battleship:finished", {
-                    winnerUserId: r.winnerId,
-                    reason: "disconnect",
-                    grids: r.players.map((p) => ({
-                        userId: p.userId,
-                        ships: p.ships,
-                        receivedShots: Array.from(p.receivedShots),
-                    })),
-                });
-                saveAttempts('BATTLESHIP', r.lobbyId, [
-                    { userId: r.winnerId, score: 1, placement: 1 },
+            emitToRoom(room, "battleship:finished", {
+                winnerUserId: room.winnerId,
+                reason: "disconnect",
+                grids: room.players.map((p) => ({
+                    userId: p?.userId ?? null,
+                    ships: p?.ships ?? [],
+                    receivedShots: Array.from(p?.receivedShots ?? []),
+                })),
+            });
+            if (room.winnerId) {
+                saveAttempts('BATTLESHIP', room.currentGameId ?? room.lobbyId, [
+                    { userId: room.winnerId, score: 1, placement: 1 },
                     { userId: userId, score: 0, placement: 2, abandon: true },
                 ]);
-            }, 30_000);
+            }
+        } else {
+            // Waiting ou finished — nettoyer si plus personne
+            room.players[seatIndex] = null;
+            const anyLeft = room.players.some(p => p !== null);
+            if (!anyLeft) {
+                clearRoomTimers(room);
+                rooms.delete(lobbyId);
+            }
         }
     });
 });
