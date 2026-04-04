@@ -169,12 +169,12 @@ function startGame(room) {
     clearRoomTimers(room);
     room.phase = "playing";
     room.currentGameId = randomUUID();
-    room.currentTurn = 0; // player[0] starts
+    room.currentTurn = Math.floor(Math.random() * room.players.length);
     const endsAt = Date.now() + room.options.turnDuration * 1000;
     room.turnEndsAt = endsAt;
 
     emitToRoom(room, "battleship:gameStart", {
-        currentTurnUserId: room.players[0].userId,
+        currentTurnUserId: room.players[room.currentTurn].userId,
         turnDuration: room.options.turnDuration,
         endsAt,
         // Each player gets their own ships confirmed + opponent info (no ships)
