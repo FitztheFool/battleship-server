@@ -1,162 +1,55 @@
-// battleship-server/src/index.ts
 import 'dotenv/config';
 import { randomUUID } from 'crypto';
-import express from "express";
-import http from "http";
-import { Server } from "socket.io";
-import { validatePlacement, processShot, autoPlaceShips } from "./gamelogic";
+import express from 'express';
+import http from 'http';
+import { Server } from 'socket.io';
 import { jwtVerify } from 'jose';
 
+import { validatePlacement, processShot, autoPlaceShips } from './gamelogic';
+import { Room } from './types';
+import { rooms, getRoom, getSlotIndex, clearRoomTimers } from './rooms';
+import { saveAttempts } from './api';
+import { timerCallbacks, startTurnTimer, startPlacementTimer } from './timer';
+import { botCallbacks, botShoot, updateBotHitQueue } from './bot';
+
 const app = express();
-app.get("/health", (req, res) => res.status(200).send("ok"));
+app.get('/health', (_req, res) => res.status(200).send('ok'));
 
 const server = http.createServer(app);
 
 const io = new Server(server, {
     cors: {
         origin: process.env.FRONTEND_URL,
-        methods: ["GET", "POST"],
+        methods: ['GET', 'POST'],
         credentials: true,
     },
 });
 
-// ── Save attempts ─────────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
-async function saveAttempts(gameType, gameId, scores) {
-    const frontendUrl = process.env.FRONTEND_URL;
-    const secret = process.env.INTERNAL_API_KEY;
-    if (!frontendUrl || !secret) return;
-    try {
-        const res = await fetch(`${frontendUrl}/api/attempts`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${secret}` },
-            body: JSON.stringify({ gameType, gameId, scores }),
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        console.log(`[${gameType}] scores saved for ${gameId}`);
-    } catch (err) {
-        console.error(`[${gameType}] saveAttempts error:`, err);
-    }
-}
-
-// ── State ────────────────────────────────────────────────────────────────────
-
-/**
- * rooms: Map<lobbyId, Room>
- *
- * Room = {
- *   lobbyId: string,
- *   options: { turnDuration: number, placementDuration: number },
- *   players: [PlayerSlot?, PlayerSlot?],   // index = seat (0 or 1)
- *   phase: "waiting" | "placement" | "playing" | "finished",
- *   currentTurn: 0 | 1,
- *   turnTimer: Timeout | null,
- *   placementTimer: Timeout | null,
- *   placementEndsAt: number | null,
- *   turnEndsAt: number | null,
- *   winnerId: string | null,
- * }
- *
- * PlayerSlot = {
- *   userId: string,
- *   username: string,
- *   avatar: string | null,
- *   socketId: string,
- *   ships: PlacedShip[],          // set during placement
- *   receivedShots: Set<string>,   // "row,col" strings
- *   ready: boolean,               // placement confirmed
- * }
- */
-const rooms = new Map();
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
-function getRoom(lobbyId) {
-    return rooms.get(lobbyId) ?? null;
-}
-
-function getSlotIndex(room, userId) {
-    return room.players.findIndex((p) => p?.userId === userId);
-}
-
-function getSocketByUserId(room, userId) {
+function getSocketByUserId(room: Room, userId: string) {
     const slot = room.players.find((p) => p?.userId === userId);
-    if (!slot) return null;
+    if (!slot || !slot.socketId) return null;
     return io.sockets.sockets.get(slot.socketId) ?? null;
 }
 
-function emitToRoom(room, event, payload) {
+function emitToRoom(room: Room, event: string, payload: unknown) {
     io.to(`room:${room.lobbyId}`).emit(event, payload);
 }
 
-function emitToPlayer(room, userId, event, payload) {
+function emitToPlayer(room: Room, userId: string, event: string, payload: unknown) {
     const s = getSocketByUserId(room, userId);
     if (s) s.emit(event, payload);
 }
 
-function clearRoomTimers(room) {
-    if (room.turnTimer) { clearTimeout(room.turnTimer); room.turnTimer = null; }
-    if (room.placementTimer) { clearTimeout(room.placementTimer); room.placementTimer = null; }
-}
-
-// ── Turn timer ────────────────────────────────────────────────────────────────
-
-function startTurnTimer(room) {
-    clearRoomTimers(room);
-    const duration = room.options.turnDuration * 1000;
-    room.turnEndsAt = Date.now() + duration;
-
-    room.turnTimer = setTimeout(() => {
-        // Time expired → current player loses their turn (shoot randomly or forfeit)
-        const currentPlayer = room.players[room.currentTurn];
-        if (!currentPlayer) return;
-
-        // Pick a random untouched cell on enemy grid
-        const enemyIndex = room.currentTurn === 0 ? 1 : 0;
-        const enemy = room.players[enemyIndex];
-        if (!enemy) return;
-
-        const emptyCells = [];
-        for (let r = 0; r < 10; r++) {
-            for (let c = 0; c < 10; c++) {
-                if (!enemy.receivedShots.has(`${r},${c}`)) emptyCells.push([r, c]);
-            }
-        }
-
-        if (emptyCells.length === 0) return;
-
-        const [row, col] = emptyCells[Math.floor(Math.random() * emptyCells.length)];
-        handleShot(room, currentPlayer.userId, row, col, true /* isTimeout */);
-    }, duration);
-}
-
-// ── Placement timer ───────────────────────────────────────────────────────────
-
-function startPlacementTimer(room) {
-    clearRoomTimers(room);
-    const duration = room.options.placementDuration * 1000;
-    room.placementEndsAt = Date.now() + duration;
-
-    room.placementTimer = setTimeout(() => {
-        // Auto-place ships for players who haven't placed yet
-        room.players.forEach((player) => {
-            if (!player || player.ready) return;
-            player.ships = autoPlaceShips();
-            player.ready = true;
-            emitToPlayer(room, player.userId, "battleship:autoPlaced", { ships: player.ships });
-        });
-        startGame(room);
-    }, duration);
-}
-
 // ── Game flow ─────────────────────────────────────────────────────────────────
 
-function startPlacementPhase(room) {
-    room.phase = "placement";
+function startPlacementPhase(room: Room) {
+    room.phase = 'placement';
     const endsAt = Date.now() + room.options.placementDuration * 1000;
     room.placementEndsAt = endsAt;
 
-    emitToRoom(room, "battleship:placementStart", {
+    emitToRoom(room, 'battleship:placementStart', {
         placementDuration: room.options.placementDuration,
         endsAt,
         options: room.options,
@@ -165,82 +58,73 @@ function startPlacementPhase(room) {
     startPlacementTimer(room);
 }
 
-function startGame(room) {
+function startGame(room: Room) {
     clearRoomTimers(room);
-    room.phase = "playing";
+    room.phase = 'playing';
     room.currentGameId = randomUUID();
-    room.currentTurn = Math.floor(Math.random() * room.players.length);
+    room.currentTurn = Math.floor(Math.random() * room.players.length) as 0 | 1;
     const endsAt = Date.now() + room.options.turnDuration * 1000;
     room.turnEndsAt = endsAt;
 
-    emitToRoom(room, "battleship:gameStart", {
-        currentTurnUserId: room.players[room.currentTurn].userId,
+    emitToRoom(room, 'battleship:gameStart', {
+        currentTurnUserId: room.players[room.currentTurn]!.userId,
         turnDuration: room.options.turnDuration,
         endsAt,
-        // Each player gets their own ships confirmed + opponent info (no ships)
-        players: room.players.map((p) => ({
-            userId: p.userId,
-            username: p.username,
-            avatar: p.avatar,
-        })),
+        players: room.players.map((p) => p ? { userId: p.userId, username: p.username, avatar: p.avatar } : null),
     });
 
     startTurnTimer(room);
+
+    if (room.players[room.currentTurn]?.userId.startsWith('bot-')) {
+        setTimeout(() => botShoot(room), 800);
+    }
 }
 
-function handleShot(room, shooterUserId, row, col, isTimeout = false) {
-    if (room.phase !== "playing") return;
+function handleShot(room: Room, shooterUserId: string, row: number, col: number, isTimeout = false) {
+    if (room.phase !== 'playing') return;
 
     const shooterIndex = getSlotIndex(room, shooterUserId);
-    if (shooterIndex !== room.currentTurn) return; // not their turn
+    if (shooterIndex !== room.currentTurn) return;
 
-    const targetIndex = shooterIndex === 0 ? 1 : 0;
+    const targetIndex: 0 | 1 = shooterIndex === 0 ? 1 : 0;
     const target = room.players[targetIndex];
     if (!target) return;
 
-    // Validate cell
     if (row < 0 || row >= 10 || col < 0 || col >= 10) return;
     if (target.receivedShots.has(`${row},${col}`)) return;
 
     clearRoomTimers(room);
 
     const result = processShot(target.ships, target.receivedShots, row, col);
+    const shotPayload = { shooterUserId, row, col, hit: result.hit, sunkShip: result.sunkShip ?? null, isTimeout };
 
-    const shotPayload = {
-        shooterUserId,
-        row,
-        col,
-        hit: result.hit,
-        sunkShip: result.sunkShip ?? null,
-        isTimeout,
-    };
-
-    // Game over?
     if (result.gameOver) {
-        room.phase = "finished";
+        room.phase = 'finished';
         room.winnerId = shooterUserId;
-        room.gameOverReason = "all_sunk";
+        room.gameOverReason = 'all_sunk';
 
-        emitToRoom(room, "battleship:shotResult", shotPayload);
-        emitToRoom(room, "battleship:finished", {
+        emitToRoom(room, 'battleship:shotResult', shotPayload);
+        emitToRoom(room, 'battleship:finished', {
             winnerUserId: shooterUserId,
-            reason: "all_sunk",
-            // Reveal both grids
+            reason: 'all_sunk',
             grids: room.players.map((p) => ({
-                userId: p.userId,
-                ships: p.ships,
-                receivedShots: Array.from(p.receivedShots),
+                userId: p!.userId,
+                ships: p!.ships,
+                receivedShots: Array.from(p!.receivedShots),
             })),
         });
         saveAttempts('BATTLESHIP', room.currentGameId ?? room.lobbyId, room.players.map((p) => ({
-            userId: p.userId,
-            score: p.userId === shooterUserId ? 1 : 0,
-            placement: p.userId === shooterUserId ? 1 : 2,
-        })));
+            userId: p!.userId,
+            username: p!.username,
+            score: p!.userId === shooterUserId ? 1 : 0,
+            placement: p!.userId === shooterUserId ? 1 : 2,
+        })), room.players.some((p) => p?.userId.startsWith('bot-')));
         return;
     }
 
-    // Switch turn only on miss (classic rules) — hits give another turn
+    const shooterIsBot = !!room.players[shooterIndex]?.userId.startsWith('bot-');
+    updateBotHitQueue(room, shooterIsBot, row, col, result.hit, result.sunkShip, target);
+
     if (!result.hit) {
         room.currentTurn = targetIndex;
     }
@@ -248,16 +132,27 @@ function handleShot(room, shooterUserId, row, col, isTimeout = false) {
     const nextEndsAt = Date.now() + room.options.turnDuration * 1000;
     room.turnEndsAt = nextEndsAt;
 
-    emitToRoom(room, "battleship:shotResult", {
+    emitToRoom(room, 'battleship:shotResult', {
         ...shotPayload,
-        currentTurnUserId: room.players[room.currentTurn].userId,
+        currentTurnUserId: room.players[room.currentTurn]!.userId,
         endsAt: nextEndsAt,
     });
 
     startTurnTimer(room);
+
+    if (room.players[room.currentTurn]?.userId.startsWith('bot-')) {
+        setTimeout(() => botShoot(room), 800);
+    }
 }
 
-// ── Socket handlers ───────────────────────────────────────────────────────────
+// ── Wire up callbacks (breaks circular deps) ──────────────────────────────────
+
+timerCallbacks.handleShot = handleShot;
+timerCallbacks.startGame = startGame;
+timerCallbacks.emitToPlayer = emitToPlayer;
+botCallbacks.handleShot = handleShot;
+
+// ── Auth middleware ───────────────────────────────────────────────────────────
 
 const SOCKET_SECRET = new TextEncoder().encode(process.env.INTERNAL_API_KEY!);
 
@@ -274,39 +169,48 @@ io.use(async (socket, next) => {
     }
 });
 
-io.on("connection", (socket) => {
-    console.log("battleship: new connection", socket.id);
+// ── Socket handlers ───────────────────────────────────────────────────────────
+
+io.on('connection', (socket) => {
+    console.log('[BATTLESHIP] nouvelle connexion', socket.id);
 
     // ── Configure ─────────────────────────────────────────────────────────────
-    socket.on("battleship:configure", ({ lobbyId, options }, ack) => {
+    socket.on('battleship:configure', ({ lobbyId, options, botName }: { lobbyId: string; options?: { turnDuration?: number; placementDuration?: number }; botName?: string }, ack?: () => void) => {
         if (!lobbyId) return;
-        const existingRoom = rooms.get(lobbyId);
-        if (!existingRoom || existingRoom.phase === "finished") {
-            if (existingRoom) {
-                if (existingRoom.turnTimer) clearTimeout(existingRoom.turnTimer);
-                if (existingRoom.placementTimer) clearTimeout(existingRoom.placementTimer);
-            }
+        const existing = rooms.get(lobbyId);
+        if (!existing || existing.phase === 'finished') {
+            if (existing) clearRoomTimers(existing);
+            const botPlayer = botName ? {
+                userId: `bot-battleship-${randomUUID()}`,
+                username: botName,
+                avatar: null,
+                socketId: null,
+                ships: [],
+                receivedShots: new Set<string>(),
+                ready: false,
+            } : null;
             rooms.set(lobbyId, {
                 lobbyId,
                 options: {
                     turnDuration: options?.turnDuration ?? 30,
                     placementDuration: options?.placementDuration ?? 60,
                 },
-                players: [null, null],
-                phase: "waiting",
+                players: botPlayer ? [botPlayer, null] : [null, null],
+                phase: 'waiting',
                 currentTurn: 0,
                 turnTimer: null,
                 placementTimer: null,
                 placementEndsAt: null,
                 turnEndsAt: null,
                 winnerId: null,
+                botHitQueue: [],
             });
         }
         if (typeof ack === 'function') ack();
     });
 
     // ── Join ─────────────────────────────────────────────────────────────────
-    socket.on("battleship:join", ({ lobbyId, avatar }) => {
+    socket.on('battleship:join', ({ lobbyId, avatar }: { lobbyId: string; avatar?: string | null }) => {
         const { userId, username } = socket.data;
         if (!lobbyId || !userId || !username) return;
 
@@ -314,131 +218,119 @@ io.on("connection", (socket) => {
         socket.join(`room:${lobbyId}`);
 
         const room = getRoom(lobbyId);
+        if (!room) { socket.emit('notFound'); return; }
 
-        if (!room) {
-            socket.emit('notFound');
-            return;
-        }
-
-        // Find existing seat (reconnection) or assign new one
         let seatIndex = room.players.findIndex((p) => p?.userId === userId);
 
         if (seatIndex === -1) {
             seatIndex = room.players.findIndex((p) => p === null);
             if (seatIndex === -1) {
-                // Spectator: no seat, just send current state and rely on room broadcasts
-                socket.emit("battleship:joined", {
+                // Spectator
+                socket.emit('battleship:joined', {
                     yourSeat: null,
                     phase: room.phase,
                     players: room.players.map((p) =>
                         p ? { userId: p.userId, username: p.username, avatar: p.avatar, ready: p.ready } : null
                     ),
-                    ...(room.phase === "playing" && room.turnEndsAt
+                    ...(room.phase === 'playing' && room.turnEndsAt
                         ? { currentTurnUserId: room.players[room.currentTurn]?.userId, turnEndsAt: room.turnEndsAt }
                         : {}),
-                    ...(room.phase === "finished" ? { winnerUserId: room.winnerId } : {}),
+                    ...(room.phase === 'finished' ? { winnerUserId: room.winnerId } : {}),
                 });
                 return;
             }
             room.players[seatIndex] = {
-                userId,
-                username,
-                avatar: avatar ?? null,
+                userId, username, avatar: avatar ?? null,
                 socketId: socket.id,
-                ships: [],
-                receivedShots: new Set(),
-                ready: false,
+                ships: [], receivedShots: new Set(), ready: false,
             };
         } else {
-            // Reconnection — update socket id
-            room.players[seatIndex].socketId = socket.id;
+            room.players[seatIndex]!.socketId = socket.id;
         }
 
-        socket.emit("battleship:joined", {
+        socket.emit('battleship:joined', {
             yourSeat: seatIndex,
             phase: room.phase,
             options: room.options,
             players: room.players.map((p) =>
                 p ? { userId: p.userId, username: p.username, avatar: p.avatar, ready: p.ready } : null
             ),
-            // Restore state if reconnecting mid-game
-            ...(room.phase === "placement" && room.placementEndsAt
-                ? { placementEndsAt: room.placementEndsAt }
+            ...(room.phase === 'placement' && room.placementEndsAt ? { placementEndsAt: room.placementEndsAt } : {}),
+            ...(room.phase === 'playing' && room.turnEndsAt
+                ? { currentTurnUserId: room.players[room.currentTurn]?.userId, turnEndsAt: room.turnEndsAt }
                 : {}),
-            ...(room.phase === "playing" && room.turnEndsAt
-                ? {
-                    currentTurnUserId: room.players[room.currentTurn]?.userId,
-                    turnEndsAt: room.turnEndsAt,
-                }
-                : {}),
-            ...(room.phase === "finished"
+            ...(room.phase === 'finished'
                 ? { winnerUserId: room.winnerId, gameOverReason: room.gameOverReason ?? null }
                 : {}),
         });
 
-        // If reconnecting and had already placed ships, send them back
-        if (room.players[seatIndex].ships.length > 0) {
-            socket.emit("battleship:shipsRestored", {
-                ships: room.players[seatIndex].ships,
-                ready: room.players[seatIndex].ready,
-                receivedShots: Array.from(room.players[seatIndex].receivedShots),
+        const player = room.players[seatIndex]!;
+        if (player.ships.length > 0) {
+            socket.emit('battleship:shipsRestored', {
+                ships: player.ships,
+                ready: player.ready,
+                receivedShots: Array.from(player.receivedShots),
             });
-            // Also send the opponent's received shots (so the player can see their hits)
-            const opponentIndex = seatIndex === 0 ? 1 : 0;
+            const opponentIndex: 0 | 1 = seatIndex === 0 ? 1 : 0;
             const opponent = room.players[opponentIndex];
             if (opponent && opponent.receivedShots.size > 0) {
-                socket.emit("battleship:opponentShotsRestored", {
+                socket.emit('battleship:opponentShotsRestored', {
                     receivedShots: Array.from(opponent.receivedShots),
-                    ships: room.phase === "finished" ? opponent.ships : [], // reveal only at end
+                    ships: room.phase === 'finished' ? opponent.ships : [],
                 });
             }
         }
 
-        // Notify both players
-        emitToRoom(room, "battleship:playerUpdate", {
+        emitToRoom(room, 'battleship:playerUpdate', {
             players: room.players.map((p) =>
                 p ? { userId: p.userId, username: p.username, avatar: p.avatar, ready: p.ready } : null
             ),
         });
 
-        // Both players seated → start placement
         const bothSeated = room.players.every((p) => p !== null);
-        if (bothSeated && room.phase === "waiting") {
+        if (bothSeated && room.phase === 'waiting') {
             startPlacementPhase(room);
+            const botSlot = room.players.find((p) => p?.userId.startsWith('bot-'));
+            if (botSlot) {
+                setTimeout(() => {
+                    if (room.phase !== 'placement' || botSlot.ready) return;
+                    botSlot.ships = autoPlaceShips();
+                    botSlot.ready = true;
+                    if (room.players.every((p) => p?.ready)) {
+                        clearRoomTimers(room);
+                        startGame(room);
+                    }
+                }, 800);
+            }
         }
     });
 
     // ── Place ships ───────────────────────────────────────────────────────────
-    socket.on("battleship:placeShips", ({ lobbyId, ships }) => {
+    socket.on('battleship:placeShips', ({ lobbyId, ships }: { lobbyId: string; ships: unknown[] }) => {
         const room = getRoom(lobbyId);
-        if (!room || room.phase !== "placement") return;
+        if (!room || room.phase !== 'placement') return;
 
         const { userId } = socket.data;
         const seatIndex = getSlotIndex(room, userId);
         if (seatIndex === -1) return;
 
-        const player = room.players[seatIndex];
-        if (player.ready) return; // already confirmed
+        const player = room.players[seatIndex]!;
+        if (player.ready) return;
 
         const validation = validatePlacement(ships);
         if (!validation.valid) {
-            socket.emit("battleship:placementError", { message: validation.error });
+            socket.emit('battleship:placementError', { message: validation.error });
             return;
         }
 
-        player.ships = ships.map((s) => ({ ...s, sunk: false }));
+        player.ships = (ships as any[]).map((s) => ({ ...s, sunk: false }));
         player.ready = true;
+        socket.emit('battleship:placementConfirmed', { ships: player.ships });
 
-        socket.emit("battleship:placementConfirmed", { ships: player.ships });
-
-        // Notify opponent that this player is ready
-        const opponentIndex = seatIndex === 0 ? 1 : 0;
+        const opponentIndex: 0 | 1 = seatIndex === 0 ? 1 : 0;
         const opponent = room.players[opponentIndex];
-        if (opponent) {
-            emitToPlayer(room, opponent.userId, "battleship:opponentReady", {});
-        }
+        if (opponent) emitToPlayer(room, opponent.userId, 'battleship:opponentReady', {});
 
-        // Both ready → start game
         if (room.players.every((p) => p?.ready)) {
             clearRoomTimers(room);
             startGame(room);
@@ -446,68 +338,78 @@ io.on("connection", (socket) => {
     });
 
     // ── Shoot ─────────────────────────────────────────────────────────────────
-    socket.on("battleship:shoot", ({ lobbyId, row, col }) => {
+    socket.on('battleship:shoot', ({ lobbyId, row, col }: { lobbyId: string; row: number; col: number }) => {
         const room = getRoom(lobbyId);
         if (!room) return;
-        const { userId } = socket.data;
-        handleShot(room, userId, row, col, false);
+        handleShot(room, socket.data.userId, row, col, false);
     });
 
     // ── Surrender ─────────────────────────────────────────────────────────────
-    socket.on("battleship:surrender", ({ lobbyId }) => {
+    socket.on('battleship:surrender', ({ lobbyId }: { lobbyId: string }) => {
         const room = getRoom(lobbyId);
-        if (!room || room.phase !== "playing") return;
+        if (!room || room.phase !== 'playing') return;
         const { userId } = socket.data;
         const seatIndex = getSlotIndex(room, userId);
         if (seatIndex === -1) return;
 
         clearRoomTimers(room);
-        room.phase = "finished";
-        room.gameOverReason = "surrender";
+        room.phase = 'finished';
+        room.gameOverReason = 'surrender';
 
-        const opponentIndex = seatIndex === 0 ? 1 : 0;
+        const opponentIndex: 0 | 1 = seatIndex === 0 ? 1 : 0;
         const opponent = room.players[opponentIndex];
         room.winnerId = opponent?.userId ?? null;
 
-        emitToRoom(room, "battleship:finished", {
+        emitToRoom(room, 'battleship:finished', {
             winnerUserId: room.winnerId,
-            reason: "surrender",
+            reason: 'surrender',
             grids: room.players.map((p) => ({
-                userId: p.userId,
-                ships: p.ships,
-                receivedShots: Array.from(p.receivedShots),
+                userId: p!.userId, ships: p!.ships, receivedShots: Array.from(p!.receivedShots),
             })),
         });
+
+        const hasBot = room.players.some((p) => p?.userId.startsWith('bot-'));
         saveAttempts('BATTLESHIP', room.currentGameId ?? room.lobbyId, [
-            { userId: room.winnerId, score: 1, placement: 1 },
-            { userId: userId, score: 0, placement: 2, abandon: true },
-        ]);
+            { userId: room.winnerId!, username: opponent?.username, score: 1, placement: 1 },
+            { userId: userId, username: room.players[seatIndex]?.username, score: 0, placement: 2, abandon: true },
+        ], hasBot);
     });
 
     // ── Rematch ───────────────────────────────────────────────────────────────
-    socket.on("battleship:rematch", ({ lobbyId }) => {
+    socket.on('battleship:rematch', ({ lobbyId }: { lobbyId: string }) => {
         const room = getRoom(lobbyId);
-        if (!room || room.phase !== "finished") return;
+        if (!room || room.phase !== 'finished') return;
 
         clearRoomTimers(room);
-
-        // Reset player states
         room.players.forEach((p) => {
             if (!p) return;
             p.ships = [];
             p.receivedShots = new Set();
             p.ready = false;
         });
-
-        room.phase = "waiting";
+        room.phase = 'waiting';
         room.winnerId = null;
         room.currentTurn = 0;
+        room.botHitQueue = [];
 
         startPlacementPhase(room);
+
+        const botSlot = room.players.find((p) => p?.userId.startsWith('bot-'));
+        if (botSlot) {
+            setTimeout(() => {
+                if (room.phase !== 'placement' || botSlot.ready) return;
+                botSlot.ships = autoPlaceShips();
+                botSlot.ready = true;
+                if (room.players.every((p) => p?.ready)) {
+                    clearRoomTimers(room);
+                    startGame(room);
+                }
+            }, 800);
+        }
     });
 
     // ── Disconnect ────────────────────────────────────────────────────────────
-    socket.on("disconnect", () => {
+    socket.on('disconnect', () => {
         const { lobbyId, userId } = socket.data || {};
         if (!lobbyId || !userId) return;
 
@@ -516,41 +418,39 @@ io.on("connection", (socket) => {
 
         const seatIndex = getSlotIndex(room, userId);
         if (seatIndex === -1) return;
-
-        // Ignore stale disconnect (player already reconnected with a newer socket)
         if (room.players[seatIndex]?.socketId !== socket.id) return;
 
-        console.log(`battleship: player ${userId} disconnected from ${lobbyId}`);
+        console.log(`[BATTLESHIP] ${userId} déconnecté de ${lobbyId}`);
 
-        if (room.phase === "playing" || room.phase === "placement") {
-            // Déconnexion en cours de partie → forfait immédiat
+        if (room.phase === 'playing' || room.phase === 'placement') {
             clearRoomTimers(room);
-            room.phase = "finished";
-            room.gameOverReason = "disconnect";
-            const opponentIndex = seatIndex === 0 ? 1 : 0;
+            room.phase = 'finished';
+            room.gameOverReason = 'disconnect';
+
+            const opponentIndex: 0 | 1 = seatIndex === 0 ? 1 : 0;
             const opponent = room.players[opponentIndex];
             room.winnerId = opponent?.userId ?? null;
 
-            emitToRoom(room, "battleship:finished", {
+            emitToRoom(room, 'battleship:finished', {
                 winnerUserId: room.winnerId,
-                reason: "disconnect",
+                reason: 'disconnect',
                 grids: room.players.map((p) => ({
                     userId: p?.userId ?? null,
                     ships: p?.ships ?? [],
                     receivedShots: Array.from(p?.receivedShots ?? []),
                 })),
             });
+
             if (room.winnerId) {
+                const hasBot = room.players.some((p) => p?.userId.startsWith('bot-'));
                 saveAttempts('BATTLESHIP', room.currentGameId ?? room.lobbyId, [
-                    { userId: room.winnerId, score: 1, placement: 1 },
-                    { userId: userId, score: 0, placement: 2, abandon: true },
-                ]);
+                    { userId: room.winnerId, username: opponent?.username, score: 1, placement: 1 },
+                    { userId: userId, username: room.players[seatIndex]?.username, score: 0, placement: 2, abandon: true },
+                ], hasBot);
             }
         } else {
-            // Waiting ou finished — nettoyer si plus personne
             room.players[seatIndex] = null;
-            const anyLeft = room.players.some(p => p !== null);
-            if (!anyLeft) {
+            if (!room.players.some(p => p !== null)) {
                 clearRoomTimers(room);
                 rooms.delete(lobbyId);
             }
@@ -558,10 +458,11 @@ io.on("connection", (socket) => {
     });
 });
 
-const PORT = process.env.PORT || 10008;
-server.listen(PORT, () => console.log("[BATTLESHIP] realtime listening on", PORT));
+// ── Démarrage ─────────────────────────────────────────────────────────────────
 
+const PORT = process.env.PORT || 10008;
+server.listen(PORT, () => console.log('[BATTLESHIP] realtime listening on', PORT));
 
 const shutdown = () => server.close(() => process.exit(0));
-process.on("SIGTERM", shutdown);
-process.on("SIGINT", shutdown);
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
