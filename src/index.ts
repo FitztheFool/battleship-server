@@ -17,7 +17,7 @@ app.get('/health', (_req, res) => res.status(200).send('ok'));
 
 const server = http.createServer(app);
 
-const io = new Server(server, { cors: corsConfig });
+const io = new Server(server, { cors: corsConfig, maxHttpBufferSize: 1e5 });
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
