@@ -13,7 +13,7 @@ import { timerCallbacks, startTurnTimer, startPlacementTimer } from './timer';
 import { botCallbacks, botShoot, updateBotHitQueue } from './bot';
 
 const app = express();
-app.get('/health', (_req, res) => res.status(200).send('ok'));
+app.get('/health', (_req, res) => { res.set('Access-Control-Allow-Origin', '*'); res.status(200).send('ok'); });
 
 const server = http.createServer(app);
 
