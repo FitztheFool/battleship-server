@@ -4,6 +4,8 @@ import express from 'express';
 import http from 'http';
 import { Server } from 'socket.io';
 import { setupSocketAuth, corsConfig } from '@kwizar/shared';
+import { io as socketClient } from 'socket.io-client';
+import { SignJWT } from 'jose';
 
 import { validatePlacement, processShot, autoPlaceShips } from './gamelogic';
 import { Room } from './types';
@@ -148,45 +150,65 @@ botCallbacks.handleShot = handleShot;
 
 setupSocketAuth(io, new TextEncoder().encode(process.env.INTERNAL_API_KEY!));
 
+// ── Lobby server connection ────────────────────────────────────────────────────
+
+const LOBBY_URL = process.env.LOBBY_SERVER_URL || 'http://localhost:10000';
+
+async function makeLobbyToken(): Promise<string> {
+    return new SignJWT({ username: 'battleship-server' })
+        .setProtectedHeader({ alg: 'HS256' })
+        .setSubject('battleship-server')
+        .sign(new TextEncoder().encode(process.env.INTERNAL_API_KEY!));
+}
+
+const lobbySocket = socketClient(LOBBY_URL, {
+    auth: (cb: (d: object) => void) => makeLobbyToken().then(token => cb({ token, gameType: 'battleship' })),
+    reconnection: true,
+    reconnectionDelay: 5_000,
+    reconnectionDelayMax: 30_000,
+});
+lobbySocket.on('connect', () => console.log('[LOBBY] connected'));
+lobbySocket.on('disconnect', (reason: string) => console.log('[LOBBY] disconnected:', reason));
+lobbySocket.on('connect_error', (err: any) => console.log('[LOBBY] connect_error:', err.message));
+
+lobbySocket.on('battleship:configure', ({ lobbyId, options, botName }: { lobbyId: string; options?: { turnDuration?: number; placementDuration?: number }; botName?: string }, ack?: () => void) => {
+    if (!lobbyId) return;
+    const existing = rooms.get(lobbyId);
+    if (!existing || existing.phase === 'finished') {
+        if (existing) clearRoomTimers(existing);
+        const botPlayer = botName ? {
+            userId: `bot-battleship-${randomUUID()}`,
+            username: botName,
+            avatar: null,
+            socketId: null,
+            ships: [],
+            receivedShots: new Set<string>(),
+            ready: false,
+        } : null;
+        rooms.set(lobbyId, {
+            lobbyId,
+            options: {
+                turnDuration: options?.turnDuration ?? 30,
+                placementDuration: options?.placementDuration ?? 60,
+            },
+            players: botPlayer ? [botPlayer, null] : [null, null],
+            phase: 'waiting',
+            currentTurn: 0,
+            turnTimer: null,
+            placementTimer: null,
+            placementEndsAt: null,
+            turnEndsAt: null,
+            winnerId: null,
+            botHitQueue: [],
+        });
+    }
+    if (typeof ack === 'function') ack();
+});
+
 // ── Socket handlers ───────────────────────────────────────────────────────────
 
 io.on('connection', (socket) => {
     console.log('[BATTLESHIP] nouvelle connexion', socket.id);
-
-    // ── Configure ─────────────────────────────────────────────────────────────
-    socket.on('battleship:configure', ({ lobbyId, options, botName }: { lobbyId: string; options?: { turnDuration?: number; placementDuration?: number }; botName?: string }, ack?: () => void) => {
-        if (!lobbyId) return;
-        const existing = rooms.get(lobbyId);
-        if (!existing || existing.phase === 'finished') {
-            if (existing) clearRoomTimers(existing);
-            const botPlayer = botName ? {
-                userId: `bot-battleship-${randomUUID()}`,
-                username: botName,
-                avatar: null,
-                socketId: null,
-                ships: [],
-                receivedShots: new Set<string>(),
-                ready: false,
-            } : null;
-            rooms.set(lobbyId, {
-                lobbyId,
-                options: {
-                    turnDuration: options?.turnDuration ?? 30,
-                    placementDuration: options?.placementDuration ?? 60,
-                },
-                players: botPlayer ? [botPlayer, null] : [null, null],
-                phase: 'waiting',
-                currentTurn: 0,
-                turnTimer: null,
-                placementTimer: null,
-                placementEndsAt: null,
-                turnEndsAt: null,
-                winnerId: null,
-                botHitQueue: [],
-            });
-        }
-        if (typeof ack === 'function') ack();
-    });
 
     // ── Join ─────────────────────────────────────────────────────────────────
     socket.on('battleship:join', ({ lobbyId, avatar }: { lobbyId: string; avatar?: string | null }) => {
