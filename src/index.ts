@@ -3,9 +3,7 @@ import { randomUUID } from 'crypto';
 import express from 'express';
 import http from 'http';
 import { Server } from 'socket.io';
-import { setupSocketAuth, corsConfig } from '@kwizar/shared';
-import { io as socketClient } from 'socket.io-client';
-import { SignJWT } from 'jose';
+import { setupSocketAuth, corsConfig, connectToLobby } from '@kwizar/shared';
 
 import { validatePlacement, processShot, autoPlaceShips } from './gamelogic';
 import { Room } from './types';
@@ -150,26 +148,7 @@ botCallbacks.handleShot = handleShot;
 
 setupSocketAuth(io, new TextEncoder().encode(process.env.INTERNAL_API_KEY!));
 
-// ── Lobby server connection ────────────────────────────────────────────────────
-
-const LOBBY_URL = process.env.LOBBY_SERVER_URL || 'http://localhost:10000';
-
-async function makeLobbyToken(): Promise<string> {
-    return new SignJWT({ username: 'battleship-server' })
-        .setProtectedHeader({ alg: 'HS256' })
-        .setSubject('battleship-server')
-        .sign(new TextEncoder().encode(process.env.INTERNAL_API_KEY!));
-}
-
-const lobbySocket = socketClient(LOBBY_URL, {
-    auth: (cb: (d: object) => void) => makeLobbyToken().then(token => cb({ token, gameType: 'battleship' })),
-    reconnection: true,
-    reconnectionDelay: 5_000,
-    reconnectionDelayMax: 30_000,
-});
-lobbySocket.on('connect', () => console.log('[LOBBY] connected'));
-lobbySocket.on('disconnect', (reason: string) => console.log('[LOBBY] disconnected:', reason));
-lobbySocket.on('connect_error', (err: any) => console.log('[LOBBY] connect_error:', err.message));
+const lobbySocket = connectToLobby('battleship-server', 'battleship');
 
 lobbySocket.on('battleship:configure', ({ lobbyId, options, botName }: { lobbyId: string; options?: { turnDuration?: number; placementDuration?: number }; botName?: string }, ack?: () => void) => {
     if (!lobbyId) return;
