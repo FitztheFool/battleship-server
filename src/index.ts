@@ -179,6 +179,7 @@ lobbySocket.on('battleship:configure', ({ lobbyId, options, botName }: { lobbyId
             turnEndsAt: null,
             winnerId: null,
             botHitQueue: [],
+            disconnectTimers: new Map(),
         });
     }
     if (typeof ack === 'function') ack();
@@ -226,6 +227,12 @@ io.on('connection', (socket) => {
             };
         } else {
             room.players[seatIndex]!.socketId = socket.id;
+            const t = room.disconnectTimers.get(userId);
+            if (t) {
+                clearTimeout(t);
+                room.disconnectTimers.delete(userId);
+                emitToRoom(room, 'battleship:playerReconnected', { userId });
+            }
         }
 
         socket.emit('battleship:joined', {
@@ -403,31 +410,47 @@ io.on('connection', (socket) => {
         console.log(`[BATTLESHIP] ${userId} déconnecté de ${lobbyId}`);
 
         if (room.phase === 'playing' || room.phase === 'placement') {
-            clearRoomTimers(room);
-            room.phase = 'finished';
-            room.gameOverReason = 'disconnect';
-
+            const disconnectedPlayer = room.players[seatIndex];
             const opponentIndex: 0 | 1 = seatIndex === 0 ? 1 : 0;
             const opponent = room.players[opponentIndex];
-            room.winnerId = opponent?.userId ?? null;
 
-            emitToRoom(room, 'battleship:finished', {
-                winnerUserId: room.winnerId,
-                reason: 'disconnect',
-                grids: room.players.map((p) => ({
-                    userId: p?.userId ?? null,
-                    ships: p?.ships ?? [],
-                    receivedShots: Array.from(p?.receivedShots ?? []),
-                })),
+            emitToRoom(room, 'battleship:inactivityWarning', {
+                userId,
+                username: disconnectedPlayer?.username ?? '',
+                secondsLeft: 60,
             });
 
-            if (room.winnerId) {
-                const hasBot = room.players.some((p) => p?.userId.startsWith('bot-'));
-                saveAttempts('BATTLESHIP', room.currentGameId ?? room.lobbyId, [
-                    { userId: room.winnerId, username: opponent?.username, score: 1, placement: 1 },
-                    { userId: userId, username: room.players[seatIndex]?.username, score: 0, placement: 2, abandon: true },
-                ], hasBot);
-            }
+            const existing = room.disconnectTimers.get(userId);
+            if (existing) clearTimeout(existing);
+            const timer = setTimeout(() => {
+                room.disconnectTimers.delete(userId);
+                if (room.phase !== 'playing' && room.phase !== 'placement') return;
+
+                clearRoomTimers(room);
+                room.phase = 'finished';
+                room.gameOverReason = 'disconnect';
+                room.winnerId = opponent?.userId ?? null;
+
+                emitToRoom(room, 'battleship:playerKicked', { userId, username: disconnectedPlayer?.username ?? '', reason: 'disconnect' });
+                emitToRoom(room, 'battleship:finished', {
+                    winnerUserId: room.winnerId,
+                    reason: 'disconnect',
+                    grids: room.players.map((p) => ({
+                        userId: p?.userId ?? null,
+                        ships: p?.ships ?? [],
+                        receivedShots: Array.from(p?.receivedShots ?? []),
+                    })),
+                });
+
+                if (room.winnerId) {
+                    const hasBot = room.players.some((p) => p?.userId.startsWith('bot-'));
+                    saveAttempts('BATTLESHIP', room.currentGameId ?? room.lobbyId, [
+                        { userId: room.winnerId, username: opponent?.username, score: 1, placement: 1 },
+                        { userId, username: disconnectedPlayer?.username, score: 0, placement: 2, abandon: true },
+                    ], hasBot);
+                }
+            }, 60_000);
+            room.disconnectTimers.set(userId, timer);
         } else {
             room.players[seatIndex] = null;
             if (!room.players.some(p => p !== null)) {

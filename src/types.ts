@@ -33,6 +33,7 @@ export interface Room {
     winnerId: string | null;
     gameOverReason?: string;
     botHitQueue: [number, number][];
+    disconnectTimers: Map<string, ReturnType<typeof setTimeout>>;
 }
 
 export interface ScoreEntry {
