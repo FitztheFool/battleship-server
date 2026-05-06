@@ -446,7 +446,7 @@ io.on('connection', (socket) => {
                     const hasBot = room.players.some((p) => p?.userId.startsWith('bot-'));
                     saveAttempts('BATTLESHIP', room.currentGameId ?? room.lobbyId, [
                         { userId: room.winnerId, username: opponent?.username, score: 1, placement: 1 },
-                        { userId, username: disconnectedPlayer?.username, score: 0, placement: 2, abandon: true },
+                        { userId, username: disconnectedPlayer?.username, score: 0, placement: 2, afk: true },
                     ], hasBot);
                 }
             }, 60_000);
