@@ -328,6 +328,8 @@ io.on('connection', (socket) => {
     socket.on('battleship:shoot', ({ lobbyId, row, col }: { lobbyId: string; row: number; col: number }) => {
         const room = getRoom(lobbyId);
         if (!room) return;
+        // Refuse NaN/non-entiers/hors-grille — NaN passe les bornes < 10 dans handleShot.
+        if (!Number.isInteger(row) || !Number.isInteger(col) || row < 0 || row > 9 || col < 0 || col > 9) return;
         handleShot(room, socket.data.userId, row, col, false);
     });
 

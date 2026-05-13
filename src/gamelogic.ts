@@ -37,6 +37,16 @@ function validatePlacement(ships) {
         if (!config) return { valid: false, error: `Unknown ship: ${ship.name}` };
         if (ship.size !== config.size) return { valid: false, error: `Wrong size for ${ship.name}` };
 
+        // Refuse NaN / non-entiers / hors-grille avant calcul des cellules :
+        // NaN < 0 et NaN >= GRID_SIZE sont tous deux false → bypass historique.
+        if (
+            !Number.isInteger(ship.row) || ship.row < 0 || ship.row >= GRID_SIZE ||
+            !Number.isInteger(ship.col) || ship.col < 0 || ship.col >= GRID_SIZE ||
+            typeof ship.horizontal !== 'boolean'
+        ) {
+            return { valid: false, error: `Ship "${ship.name}" coordinates invalid` };
+        }
+
         const cells = getShipCells(ship);
 
         for (const [r, c] of cells) {
