@@ -150,10 +150,10 @@ setupSocketAuth(io, new TextEncoder().encode((process.env.SOCKET_USER_SECRET ?? 
 
 const lobbySocket = connectToLobby('battleship-server', 'battleship');
 
-lobbySocket.on('battleship:configure', ({ lobbyId, options, botName }: { lobbyId: string; options?: { turnDuration?: number; placementDuration?: number }; botName?: string }, ack?: () => void) => {
+lobbySocket.on('battleship:configure', ({ lobbyId, options, botName, fresh }: { lobbyId: string; options?: { turnDuration?: number; placementDuration?: number }; botName?: string; fresh?: boolean }, ack?: () => void) => {
     if (!lobbyId) return;
     const existing = rooms.get(lobbyId);
-    if (!existing || existing.phase === 'finished') {
+    if (!existing || existing.phase === 'finished' || fresh) {
         if (existing) clearRoomTimers(existing);
         const botPlayer = botName ? {
             userId: `bot-battleship-${randomUUID()}`,
