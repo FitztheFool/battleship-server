@@ -1,3 +1,5 @@
+import type { GameLogEntry } from './gameLog';
+
 export type GamePhase = 'waiting' | 'placement' | 'playing' | 'finished';
 
 export interface PlacedShip {
@@ -34,6 +36,8 @@ export interface Room {
     gameOverReason?: string;
     botHitQueue: [number, number][];
     disconnectTimers: Map<string, ReturnType<typeof setTimeout>>;
+    log: GameLogEntry[];
+    logSeq?: number;
 }
 
 export interface ScoreEntry {

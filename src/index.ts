@@ -11,6 +11,9 @@ import { rooms, getRoom, getSlotIndex, clearRoomTimers } from './rooms';
 import { saveAttempts } from '@kwizar/shared';
 import { timerCallbacks, startTurnTimer, startPlacementTimer } from './timer';
 import { botCallbacks, botShoot, updateBotHitQueue } from './bot';
+import { pushLog } from './gameLog';
+
+const coord = (row: number, col: number) => `${String.fromCharCode(65 + col)}${row + 1}`;
 
 const app = express();
 app.get('/health', (_req, res) => { res.set('Access-Control-Allow-Origin', '*'); res.status(200).send('ok'); });
@@ -29,6 +32,12 @@ function getSocketByUserId(room: Room, userId: string) {
 
 function emitToRoom(room: Room, event: string, payload: unknown) {
     io.to(`room:${room.lobbyId}`).emit(event, payload);
+}
+
+/** Push a journal entry and broadcast the updated log to the room. */
+function logEvent(room: Room, tone: Parameters<typeof pushLog>[1], text: string) {
+    pushLog(room, tone, text);
+    emitToRoom(room, 'battleship:log', { log: room.log.slice(-100) });
 }
 
 function emitToPlayer(room: Room, userId: string, event: string, payload: unknown) {
@@ -60,6 +69,7 @@ function startGame(room: Room) {
     const endsAt = Date.now() + room.options.turnDuration * 1000;
     room.turnEndsAt = endsAt;
 
+    logEvent(room, 'system', `La bataille commence — ${room.players[room.currentTurn]!.username} ouvre le feu`);
     emitToRoom(room, 'battleship:gameStart', {
         currentTurnUserId: room.players[room.currentTurn]!.userId,
         turnDuration: room.options.turnDuration,
@@ -92,10 +102,18 @@ function handleShot(room: Room, shooterUserId: string, row: number, col: number,
     const result = processShot(target.ships, target.receivedShots, row, col);
     const shotPayload = { shooterUserId, row, col, hit: result.hit, sunkShip: result.sunkShip ?? null, isTimeout };
 
+    const shooterName = room.players[shooterIndex]?.username ?? '?';
+    if (result.sunkShip) {
+        logEvent(room, 'coup', `${shooterName} tire en ${coord(row, col)} — touché-coulé !`);
+    } else {
+        logEvent(room, result.hit ? 'attack' : 'move', `${shooterName} tire en ${coord(row, col)} — ${result.hit ? 'touché' : 'à l\'eau'}`);
+    }
+
     if (result.gameOver) {
         room.phase = 'finished';
         room.winnerId = shooterUserId;
         room.gameOverReason = 'all_sunk';
+        logEvent(room, 'coup', `${shooterName} gagne — flotte ennemie coulée !`);
 
         emitToRoom(room, 'battleship:shotResult', shotPayload);
         emitToRoom(room, 'battleship:finished', {
@@ -180,6 +198,8 @@ lobbySocket.on('battleship:configure', ({ lobbyId, options, botName, fresh }: { 
             winnerId: null,
             botHitQueue: [],
             disconnectTimers: new Map(),
+            log: [],
+            logSeq: 0,
         });
     }
     if (typeof ack === 'function') ack();
@@ -239,6 +259,7 @@ io.on('connection', (socket) => {
             yourSeat: seatIndex,
             phase: room.phase,
             options: room.options,
+            log: room.log.slice(-100),
             players: room.players.map((p) =>
                 p ? { userId: p.userId, username: p.username, avatar: p.avatar, ready: p.ready } : null
             ),
@@ -348,6 +369,7 @@ io.on('connection', (socket) => {
         const opponentIndex: 0 | 1 = seatIndex === 0 ? 1 : 0;
         const opponent = room.players[opponentIndex];
         room.winnerId = opponent?.userId ?? null;
+        logEvent(room, 'system', `${room.players[seatIndex]?.username ?? '?'} abandonne — ${opponent?.username ?? '?'} gagne`);
 
         emitToRoom(room, 'battleship:finished', {
             winnerUserId: room.winnerId,
