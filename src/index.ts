@@ -208,7 +208,7 @@ lobbySocket.on('battleship:configure', ({ lobbyId, options, botName, fresh }: { 
 // ── Socket handlers ───────────────────────────────────────────────────────────
 
 io.on('connection', (socket) => {
-    console.log('[BATTLESHIP] nouvelle connexion', socket.id);
+    console.log('[BATTLESHIP] connexion', socket.id);
 
     // ── Join ─────────────────────────────────────────────────────────────────
     socket.on('battleship:join', ({ lobbyId, avatar }: { lobbyId: string; avatar?: string | null }) => {
@@ -488,7 +488,7 @@ io.on('connection', (socket) => {
 // ── Démarrage ─────────────────────────────────────────────────────────────────
 
 const PORT = process.env.PORT || 10008;
-server.listen(PORT, () => console.log('[BATTLESHIP] realtime listening on', PORT));
+server.listen(PORT, () => console.log('[BATTLESHIP] listening on port', PORT));
 
 const shutdown = () => {
     io.close(() => {
