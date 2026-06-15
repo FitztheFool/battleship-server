@@ -15,6 +15,7 @@ export const timerCallbacks: {
 
 export function startTurnTimer(room: Room): void {
     clearRoomTimers(room);
+    if ((room.options.turnDuration ?? 0) <= 0) { room.turnEndsAt = null; return; }  // 0 = pas de limite
     const duration = room.options.turnDuration * 1000;
     room.turnEndsAt = Date.now() + duration;
 

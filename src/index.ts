@@ -168,7 +168,7 @@ setupSocketAuth(io, new TextEncoder().encode((process.env.SOCKET_USER_SECRET ?? 
 
 const lobbySocket = connectToLobby('battleship-server', 'battleship');
 
-lobbySocket.on('battleship:configure', ({ lobbyId, options, botName, fresh }: { lobbyId: string; options?: { turnDuration?: number; placementDuration?: number }; botName?: string; fresh?: boolean }, ack?: () => void) => {
+lobbySocket.on('battleship:configure', ({ lobbyId, options, botName, fresh, turnSeconds }: { lobbyId: string; options?: { turnDuration?: number; placementDuration?: number }; botName?: string; fresh?: boolean; turnSeconds?: number | null }, ack?: () => void) => {
     if (!lobbyId) return;
     const existing = rooms.get(lobbyId);
     if (!existing || existing.phase === 'finished' || fresh) {
@@ -185,7 +185,7 @@ lobbySocket.on('battleship:configure', ({ lobbyId, options, botName, fresh }: { 
         rooms.set(lobbyId, {
             lobbyId,
             options: {
-                turnDuration: options?.turnDuration ?? 30,
+                turnDuration: turnSeconds ?? options?.turnDuration ?? 30,
                 placementDuration: options?.placementDuration ?? 60,
             },
             players: botPlayer ? [botPlayer, null] : [null, null],
