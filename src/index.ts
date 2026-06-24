@@ -125,7 +125,7 @@ function handleShot(room: Room, shooterUserId: string, row: number, col: number,
                 receivedShots: Array.from(p!.receivedShots),
             })),
         });
-        saveAttemptsAndEmit(io, room.lobbyId, 'BATTLESHIP', room.currentGameId ?? room.lobbyId,room.players.map((p) => ({
+        saveAttemptsAndEmit(io, `room:${room.lobbyId}`, 'BATTLESHIP', room.currentGameId ?? room.lobbyId,room.players.map((p) => ({
             userId: p!.userId,
             username: p!.username,
             score: p!.userId === shooterUserId ? 1 : 0,
@@ -380,7 +380,7 @@ io.on('connection', (socket) => {
         });
 
         const hasBot = room.players.some((p) => p?.userId.startsWith('bot-'));
-        saveAttemptsAndEmit(io, room.lobbyId, 'BATTLESHIP', room.currentGameId ?? room.lobbyId,[
+        saveAttemptsAndEmit(io, `room:${room.lobbyId}`, 'BATTLESHIP', room.currentGameId ?? room.lobbyId,[
             { userId: room.winnerId!, username: opponent?.username, score: 1, placement: 1 },
             { userId: userId, username: room.players[seatIndex]?.username, score: 0, placement: 2, abandon: true },
         ], hasBot);
@@ -468,7 +468,7 @@ io.on('connection', (socket) => {
 
                 if (room.winnerId) {
                     const hasBot = room.players.some((p) => p?.userId.startsWith('bot-'));
-                    saveAttemptsAndEmit(io, room.lobbyId, 'BATTLESHIP', room.currentGameId ?? room.lobbyId,[
+                    saveAttemptsAndEmit(io, `room:${room.lobbyId}`, 'BATTLESHIP', room.currentGameId ?? room.lobbyId,[
                         { userId: room.winnerId, username: opponent?.username, score: 1, placement: 1 },
                         { userId, username: disconnectedPlayer?.username, score: 0, placement: 2, afk: true },
                     ], hasBot);
