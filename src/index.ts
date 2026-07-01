@@ -387,38 +387,6 @@ io.on('connection', (socket) => {
     });
 
     // ── Rematch ───────────────────────────────────────────────────────────────
-    socket.on('battleship:rematch', ({ lobbyId }: { lobbyId: string }) => {
-        const room = getRoom(lobbyId);
-        if (!room || room.phase !== 'finished') return;
-
-        clearRoomTimers(room);
-        room.players.forEach((p) => {
-            if (!p) return;
-            p.ships = [];
-            p.receivedShots = new Set();
-            p.ready = false;
-        });
-        room.phase = 'waiting';
-        room.winnerId = null;
-        room.currentTurn = 0;
-        room.botHitQueue = [];
-
-        startPlacementPhase(room);
-
-        const botSlot = room.players.find((p) => p?.userId.startsWith('bot-'));
-        if (botSlot) {
-            setTimeout(() => {
-                if (room.phase !== 'placement' || botSlot.ready) return;
-                botSlot.ships = autoPlaceShips();
-                botSlot.ready = true;
-                if (room.players.every((p) => p?.ready)) {
-                    clearRoomTimers(room);
-                    startGame(room);
-                }
-            }, 800);
-        }
-    });
-
     // ── Disconnect ────────────────────────────────────────────────────────────
     socket.on('disconnect', () => {
         const { lobbyId, userId } = socket.data || {};
