@@ -1,9 +1,6 @@
 import 'dotenv/config';
 import { randomUUID } from 'crypto';
-import express from 'express';
-import http from 'http';
-import { Server } from 'socket.io';
-import { setupSocketAuth, corsConfig, connectToLobby } from '@kwizar/shared';
+import { createGameServer } from '@kwizar/shared';
 
 import { validatePlacement, processShot, autoPlaceShips } from './gamelogic';
 import { Room } from './types';
@@ -11,16 +8,13 @@ import { rooms, getRoom, getSlotIndex, clearRoomTimers } from './rooms';
 import { saveAttemptsAndEmit } from '@kwizar/shared';
 import { timerCallbacks, startTurnTimer, startPlacementTimer } from './timer';
 import { botCallbacks, botShoot, updateBotHitQueue } from './bot';
-import { pushLog } from './gameLog';
+import { pushLog } from '@kwizar/shared';
 
 const coord = (row: number, col: number) => `${String.fromCharCode(65 + col)}${row + 1}`;
 
-const app = express();
-app.get('/health', (_req, res) => { res.set('Access-Control-Allow-Origin', '*'); res.status(200).send('ok'); });
 
-const server = http.createServer(app);
 
-const io = new Server(server, { cors: corsConfig, maxHttpBufferSize: 1e5 });
+const { io, lobbySocket, listen } = createGameServer({ serviceName: 'battleship-server', gameType: 'battleship', defaultPort: 10008 });
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -164,9 +158,7 @@ timerCallbacks.startGame = startGame;
 timerCallbacks.emitToPlayer = emitToPlayer;
 botCallbacks.handleShot = handleShot;
 
-setupSocketAuth(io, new TextEncoder().encode((process.env.SOCKET_USER_SECRET ?? process.env.INTERNAL_API_KEY)!));
 
-const lobbySocket = connectToLobby('battleship-server', 'battleship');
 
 lobbySocket.on('battleship:configure', ({ lobbyId, options, botName, fresh, turnSeconds }: { lobbyId: string; options?: { turnDuration?: number; placementDuration?: number }; botName?: string; fresh?: boolean; turnSeconds?: number | null }, ack?: () => void) => {
     if (!lobbyId) return;
@@ -455,15 +447,5 @@ io.on('connection', (socket) => {
 
 // ── Démarrage ─────────────────────────────────────────────────────────────────
 
-const PORT = process.env.PORT || 10008;
-server.listen(PORT, () => console.log('[BATTLESHIP] listening on port', PORT));
+listen();
 
-const shutdown = () => {
-    io.close(() => {
-        server.close(() => process.exit(0));
-    });
-    setTimeout(() => process.exit(1), 3000).unref();
-};
-
-process.on("SIGTERM", shutdown);
-process.on("SIGINT", shutdown);

@@ -1,4 +1,4 @@
-import type { GameLogEntry } from './gameLog';
+import type { GameLogEntry } from '@kwizar/shared';
 
 export type GamePhase = 'waiting' | 'placement' | 'playing' | 'finished';
 
